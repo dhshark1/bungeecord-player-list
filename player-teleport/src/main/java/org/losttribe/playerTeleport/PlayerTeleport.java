@@ -8,6 +8,15 @@ import net.md_5.bungee.api.plugin.Listener;
 import net.md_5.bungee.api.plugin.Plugin;
 import net.md_5.bungee.event.EventHandler;
 
+import net.md_5.bungee.config.Configuration;
+import net.md_5.bungee.config.ConfigurationProvider;
+import net.md_5.bungee.config.YamlConfiguration;
+
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -15,30 +24,38 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 
 import java.util.List;
-import java.util.ArrayList;
+import java.util.Random;
 import java.util.function.Consumer;
 
-public final class PlayerTeleport extends Plugin implements Listener {
+public class PlayerTeleport extends Plugin implements Listener {
 
-    // TODO change DB consts to be the right information
-    private static final String MYSQL_HOST = "localhost";
-    private static final String MYSQL_PORT = "3306";
-    private static final String MYSQL_DB   = "mydatabase";
-    private static final String MYSQL_USER = "root";
-    private static final String MYSQL_PASS = "password";
+    private String mysqlHost;
+    private int mysqlPort;
+    private String mysqlDb;
+    private String mysqlUser;
+    private String mysqlPass;
 
-    private List<String> altServers = new ArrayList<>();
+    private List<String> altServers;
+
+    private Configuration config;
 
     @Override
     public void onEnable() {
+        loadConfig();
+
+        this.mysqlHost = config.getString("mysql.host", "localhost");
+        this.mysqlPort = config.getInt("mysql.port", 3306);
+        this.mysqlDb   = config.getString("mysql.db", "losttribedb");
+        this.mysqlUser = config.getString("mysql.user", "root");
+        this.mysqlPass = config.getString("mysql.pass", "password");
+
+        this.altServers = config.getStringList("altServers");
+
         getProxy().getPluginManager().registerListener(this, this);
 
-        // TODO add the server names that are in list A of servers
-        altServers.add("lobby");
-
-        getLogger().info("MyBungeePlugin has been enabled!");
+        getLogger().info("player teleport has been enabled!");
+        getLogger().info("Loaded " + altServers.size() + " altServers from config.yml.");
     }
-
 
     @EventHandler
     public void onServerConnect(ServerConnectEvent event) {
@@ -52,18 +69,21 @@ public final class PlayerTeleport extends Plugin implements Listener {
                 if (isInDB) {
                     target = ProxyServer.getInstance().getServerInfo("smp");
                     if (target == null) {
-                        getLogger().warning("Server 'smp' not found in BungeeCord config!");
+                        getLogger().warning("Could not find server 'smp' in BungeeCord config!");
                         return;
                     }
                 } else {
                     if (altServers.isEmpty()) {
-                        getLogger().warning("No servers in altServers list!");
+                        getLogger().warning("No altServers configured! Cannot send player anywhere.");
                         return;
                     }
-                    String firstChoice = altServers.get(0);
-                    target = ProxyServer.getInstance().getServerInfo(firstChoice);
+
+                    Random rand = new Random();
+                    String randomServerName = altServers.get(rand.nextInt(altServers.size()));
+
+                    target = ProxyServer.getInstance().getServerInfo(randomServerName);
                     if (target == null) {
-                        getLogger().warning("Server '" + firstChoice + "' not found in BungeeCord config!");
+                        getLogger().warning("Could not find server '" + randomServerName + "' in BungeeCord config!");
                         return;
                     }
                 }
@@ -78,20 +98,20 @@ public final class PlayerTeleport extends Plugin implements Listener {
     private void checkPlayerInDatabaseAsync(String playerName, Consumer<Boolean> callback) {
         getProxy().getScheduler().runAsync(this, () -> {
             boolean inDB = false;
-            String url = "jdbc:mysql://" + MYSQL_HOST + ":" + MYSQL_PORT + "/" + MYSQL_DB;
-
             Connection conn = null;
             PreparedStatement stmt = null;
             ResultSet rs = null;
 
+            String url = "jdbc:mysql://" + mysqlHost + ":" + mysqlPort + "/" + mysqlDb;
+
             try {
-                conn = DriverManager.getConnection(url, MYSQL_USER, MYSQL_PASS);
-                // TODO get the correct column name in the db where the player names are fetched
-                String sql = "SELECT * FROM allowed_players WHERE player_name = ?";
+                conn = DriverManager.getConnection(url, mysqlUser, mysqlPass);
+                // TODO is this the right to column name to select from?
+                String sql = "SELECT * FROM players WHERE player_name = ?";
                 stmt = conn.prepareStatement(sql);
                 stmt.setString(1, playerName);
-
                 rs = stmt.executeQuery();
+
                 if (rs.next()) {
                     inDB = true;
                 }
@@ -105,6 +125,33 @@ public final class PlayerTeleport extends Plugin implements Listener {
 
             callback.accept(inDB);
         });
+    }
+
+    private void loadConfig() {
+        if (!getDataFolder().exists()) {
+            getDataFolder().mkdir();
+        }
+
+        File configFile = new File(getDataFolder(), "config.yml");
+
+        if (!configFile.exists()) {
+            try (InputStream in = getResourceAsStream("config.yml")) {
+                if (in == null) {
+                    getLogger().warning("No default config.yml found inside the plugin jar!");
+                } else {
+                    Files.copy(in, configFile.toPath());
+                    getLogger().info("Default config.yml has been created!");
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+
+        try {
+            config = ConfigurationProvider.getProvider(YamlConfiguration.class).load(configFile);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
     @Override
